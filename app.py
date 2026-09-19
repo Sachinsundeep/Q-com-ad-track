@@ -9,8 +9,7 @@ import time
 from datetime import datetime
 import altair as alt
 from streamlit_autorefresh import st_autorefresh
-import urllib.parse
-from curl_cffi import requests
+import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="Quick Commerce Shelf Monitor & Bidding Desk",
@@ -18,7 +17,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Streamlit width compatibility
 def df_width():
     try:
         ver = tuple(map(int, st.__version__.split(".")[:2]))
@@ -32,7 +30,6 @@ WIDTH_KWARG = df_width()
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shelf_history.json")
 
 LOCATION_LOOKUP = {
-    # Pincodes & Bangalore Localities
     "560021": {"name": "Jalahalli", "lat": "13.0470976", "lon": "77.5476596"},
     "jalahalli": {"name": "Jalahalli", "lat": "13.0470976", "lon": "77.5476596"},
     "560037": {"name": "Marathahalli", "lat": "12.959172", "lon": "77.697419"},
@@ -54,11 +51,13 @@ LOCATION_LOOKUP = {
     "whitefield": {"name": "Whitefield", "lat": "12.969819", "lon": "77.749972"},
     "560004": {"name": "Basavanagudi", "lat": "12.943187", "lon": "77.573787"},
     "basavanagudi": {"name": "Basavanagudi", "lat": "12.943187", "lon": "77.573787"},
-    "560040": {"name": "Vijayanagar", "lat": "12.9719", "lon": "77.5305"},
-    "vijayanagar": {"name": "Vijayanagar", "lat": "12.9719", "lon": "77.5305"},
-    "vijay nagar": {"name": "Vijayanagar", "lat": "12.9719", "lon": "77.5305"},
-    "560068": {"name": "Bommanahalli", "lat": "12.9029", "lon": "77.6242"},
-    "bommanahalli": {"name": "Bommanahalli", "lat": "12.9029", "lon": "77.6242"},
+    "560040": {"name": "Vijayanagar", "lat": "12.971900", "lon": "77.530500"},
+    "vijayanagar": {"name": "Vijayanagar", "lat": "12.971900", "lon": "77.530500"},
+    "vijay nagar": {"name": "Vijayanagar", "lat": "12.971900", "lon": "77.530500"},
+    "560068": {"name": "Bommanahalli", "lat": "12.902900", "lon": "77.624200"},
+    "bommanahalli": {"name": "Bommanahalli", "lat": "12.902900", "lon": "77.624200"},
+    "560056": {"name": "Ullal / Bangalore West", "lat": "12.955600", "lon": "77.498000"},
+    "ullal": {"name": "Ullal / Bangalore West", "lat": "12.955600", "lon": "77.498000"},
     "560091": {"name": "Viswaneedam", "lat": "12.990000", "lon": "77.510000"}
 }
 
@@ -67,10 +66,8 @@ def resolve_location(user_input: str):
     if clean in LOCATION_LOOKUP:
         loc = LOCATION_LOOKUP[clean]
         return loc["lat"], loc["lon"], f"{loc['name']} ({clean})"
-    # Numeric 6-digit fallback
     if re.match(r"^\d{6}$", clean):
-        return "13.0470976", "77.5476596", f"Pincode ({clean})"
-    # Generalized Bangalore centroid fallback
+        return "13.0470976", "77.5476596", f"Pincode {clean}"
     return "12.971598", "77.594563", f"{user_input.title()} (Bangalore)"
 
 EXCLUDED_BRANDS = ["anandhaas", "shree anandhaas", "anandhas", "ananda dairy", "ananda"]
@@ -80,9 +77,7 @@ def is_my_brand(brand_name: str) -> bool:
     for exc in EXCLUDED_BRANDS:
         if exc in b:
             return False
-    is_anand = bool(re.search(r"\banand(\s+sweets)?\b", b))
-    is_chaknow = bool(re.search(r"\bchak(\s*now)?\b", b))
-    return is_anand or is_chaknow
+    return bool("anand" in b or "chak" in b)
 
 KNOWN_BRANDS = [
     "Shree Anandhaas", "Anandhaas", "Anand Sweets", "Chak Now", "Chaknow",
@@ -143,14 +138,14 @@ def export_history_to_excel():
         parts = key.split("_")
         store = parts[0].capitalize()
         kw = parts[1] if len(parts) > 1 else ""
-        pin = parts[2] if len(parts) > 2 else ""
+        loc = parts[2] if len(parts) > 2 else ""
         scan_time = data.get("timestamp", "")
         for item in data.get("items", []):
             all_rows.append({
                 "Scan Timestamp": scan_time,
                 "Platform": store,
                 "Search Keyword": kw,
-                "Location": pin,
+                "Location": loc,
                 "Overall Shelf Pos": item.get("Overall Shelf Pos"),
                 "Type": item.get("Type"),
                 "Brand": item.get("Brand"),
@@ -168,122 +163,12 @@ def export_history_to_excel():
         df_targets.to_excel(writer, index=False, sheet_name='Target Brands Shift Log')
     return buf.getvalue()
 
-def fetch_live_platform_data(store: str, query: str, lat: str, lon: str):
-    results = []
-    store = store.lower()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "accept": "application/json, text/plain, */*",
-        "lat": str(lat),
-        "lon": str(lon),
-        "app_client": "consumer_web"
-    }
-    
-    if store == "blinkit":
-        url = f"https://blinkit.com/v1/layout/search?q={urllib.parse.quote(query)}"
-        try:
-            r = requests.get(url, headers=headers, impersonate="chrome124", timeout=12)
-            if r.status_code == 200:
-                data = r.json()
-                widgets = data.get("layout", {}).get("widgets", [])
-                overall, ad_r, org_r = 1, 1, 1
-                for w in widgets:
-                    for prod in w.get("data", {}).get("products", []):
-                        name = prod.get("name", "").strip()
-                        if not name: continue
-                        is_ad = bool(prod.get("is_sponsored", False) or prod.get("ad_id"))
-                        price = f"₹{prod.get('price', 0)}"
-                        pack = prod.get("unit", "Standard")
-                        brand = extract_brand(name)
-                        results.append({
-                            "Overall Shelf Pos": overall,
-                            "Type": "Sponsored Ad" if is_ad else "Organic",
-                            "Placement Rank": f"Ad #{ad_r}" if is_ad else f"Org #{org_r}",
-                            "Product Name": name,
-                            "Brand": brand,
-                            "Price": price,
-                            "Pack Size": pack
-                        })
-                        if is_ad: ad_r += 1
-                        else: org_r += 1
-                        overall += 1
-        except Exception:
-            pass
-
-    elif store == "zepto":
-        url = f"https://api.zeptonow.com/api/v3/search?query={urllib.parse.quote(query)}&pageNumber=1&mode=MANUAL"
-        z_headers = dict(headers)
-        z_headers["store-id"] = "34774f44-f41c-4bde-993b-8e93684ff94f"
-        z_headers["compatible_mode"] = "true"
-        try:
-            r = requests.get(url, headers=z_headers, impersonate="chrome124", timeout=12)
-            if r.status_code == 200:
-                data = r.json()
-                overall, ad_r, org_r = 1, 1, 1
-                for block in data.get("layout", []):
-                    for item in block.get("data", {}).get("resolver", {}).get("data", {}).get("items", []):
-                        prod = item.get("product", {})
-                        name = prod.get("name", "").strip()
-                        if not name: continue
-                        is_ad = bool(item.get("isSponsored", False) or prod.get("isSponsored", False))
-                        mrp = prod.get("discountedSellingPrice", 0) / 100
-                        price = f"₹{int(mrp)}" if mrp else "₹99"
-                        pack = prod.get("unit", "Standard")
-                        brand = extract_brand(name)
-                        results.append({
-                            "Overall Shelf Pos": overall,
-                            "Type": "Sponsored Ad" if is_ad else "Organic",
-                            "Placement Rank": f"Ad #{ad_r}" if is_ad else f"Org #{org_r}",
-                            "Product Name": name,
-                            "Brand": brand,
-                            "Price": price,
-                            "Pack Size": pack
-                        })
-                        if is_ad: ad_r += 1
-                        else: org_r += 1
-                        overall += 1
-        except Exception:
-            pass
-
-    elif store == "instamart":
-        url = f"https://www.swiggy.com/api/instamart/search?query={urllib.parse.quote(query)}&lat={lat}&lng={lon}"
-        try:
-            r = requests.get(url, headers=headers, impersonate="chrome124", timeout=12)
-            if r.status_code == 200:
-                data = r.json()
-                overall, ad_r, org_r = 1, 1, 1
-                for widget in data.get("data", {}).get("widgets", []):
-                    for prod in widget.get("data", {}).get("nodes", []):
-                        name = prod.get("display_name", "").strip()
-                        if not name: continue
-                        is_ad = bool(prod.get("is_sponsored", False) or prod.get("ad_info"))
-                        price_val = prod.get("price", {}).get("offer_price", 0)
-                        price = f"₹{price_val}" if price_val else "₹99"
-                        pack = prod.get("quantity", "Standard")
-                        brand = extract_brand(name)
-                        results.append({
-                            "Overall Shelf Pos": overall,
-                            "Type": "Sponsored Ad" if is_ad else "Organic",
-                            "Placement Rank": f"Ad #{ad_r}" if is_ad else f"Org #{org_r}",
-                            "Product Name": name,
-                            "Brand": brand,
-                            "Price": price,
-                            "Pack Size": pack
-                        })
-                        if is_ad: ad_r += 1
-                        else: org_r += 1
-                        overall += 1
-        except Exception:
-            pass
-
-    return results
-
-# Session State Setup
+# Initialize session state variables
 if "keyword_list" not in st.session_state:
     st.session_state.keyword_list = ["kaju katli", "mysore pak", "besan laddu"]
 
 if "location_list" not in st.session_state:
-    st.session_state.location_list = ["560021", "560037", "560103", "Koramangala", "Indiranagar", "Whitefield", "Vijay Nagar", "Bommanahalli"]
+    st.session_state.location_list = ["560021", "560037", "560103", "Koramangala", "Indiranagar", "Whitefield", "Vijay Nagar", "Ullal", "Bommanahalli"]
 
 if "shelf_data" not in st.session_state:
     st.session_state.shelf_data = []
@@ -291,7 +176,7 @@ if "shelf_data" not in st.session_state:
 if "last_scan_time" not in st.session_state:
     st.session_state.last_scan_time = time.time()
 
-# Sidebar
+# Sidebar Controls
 with st.sidebar:
     st.header("🔔 Alert Channels")
     alert_blinkit = st.checkbox("Blinkit Alerts", value=True)
@@ -323,7 +208,7 @@ with st.sidebar:
     if suggest_instamart: suggest_platforms.append("Instamart")
 
     st.divider()
-    st.subheader("🔄 Live Polling")
+    st.subheader("🔄 Background Scan")
     auto_monitor = st.checkbox("Enable Auto-Scan Loop", value=False)
     interval_mins = st.slider("Frequency (Minutes)", min_value=1, max_value=60, value=5)
 
@@ -332,6 +217,7 @@ st.caption("Algorithmic bidding recommendations, cannibalization defense, and sh
 
 st_autorefresh(interval=30 * 1000, key="auto_scan_ticker")
 
+# Alert Log Calculation
 def generate_live_alerts(current_items, active_channels, scope_filter):
     if not active_channels:
         return ["ℹ️ All platform alerts are currently toggled off in the sidebar."]
@@ -345,9 +231,9 @@ def generate_live_alerts(current_items, active_channels, scope_filter):
             continue
 
         kw = card.get("Search Term", "")
-        pin = card.get("Location", "")
+        loc = card.get("Location", "")
         store_key = platform.lower()
-        cache_key = f"{store_key}_{str(kw).lower().strip()}_{str(pin).lower().strip()}"
+        cache_key = f"{store_key}_{str(kw).lower().strip()}_{str(loc).lower().strip()}"
         
         prev_scan = history.get(cache_key, None)
         prev_time = prev_scan.get("timestamp", "prior scan") if prev_scan else ""
@@ -387,21 +273,21 @@ def generate_live_alerts(current_items, active_channels, scope_filter):
             delta = old_pos - c_pos
             if delta > 0:
                 alerts.append(
-                    f"🟢 **Rank Gain**: {brand_name} item '**{p_name}**' {type_tag} gained from **Pos #{old_pos}** ➔ **Pos #{c_pos}** (+{delta}) on **{platform}** ({kw} @ {pin}, vs. {prev_time})."
+                    f"🟢 **Rank Gain**: {brand_name} item '**{p_name}**' {type_tag} gained from **Pos #{old_pos}** ➔ **Pos #{c_pos}** (+{delta}) on **{platform}** ({kw} @ {loc}, vs. {prev_time})."
                 )
             elif delta < 0:
                 alerts.append(
-                    f"🔻 **Rank Drop**: {brand_name} item '**{p_name}**' {type_tag} dropped from **Pos #{old_pos}** ➔ **Pos #{c_pos}** ({delta}) on **{platform}** ({kw} @ {pin}, vs. {prev_time})."
+                    f"🔻 **Rank Drop**: {brand_name} item '**{p_name}**' {type_tag} dropped from **Pos #{old_pos}** ➔ **Pos #{c_pos}** ({delta}) on **{platform}** ({kw} @ {loc}, vs. {prev_time})."
                 )
             else:
                 if is_mine:
                     alerts.append(
-                        f"⚪ **Maintained**: {brand_name} item '**{p_name}**' {type_tag} held **Pos #{c_pos}** on **{platform}** ({kw} @ {pin}, unchanged since {prev_time})."
+                        f"⚪ **Maintained**: {brand_name} item '**{p_name}**' {type_tag} held **Pos #{c_pos}** on **{platform}** ({kw} @ {loc}, unchanged since {prev_time})."
                     )
         else:
             if is_mine:
                 alerts.append(
-                    f"🟢 **Rank Track**: {brand_name} item '**{p_name}**' {type_tag} at **Pos #{c_pos}** (**{card.get('Placement Rank', '')}**) on **{platform}** ({kw} @ {pin})."
+                    f"🟢 **Rank Track**: {brand_name} item '**{p_name}**' {type_tag} at **Pos #{c_pos}** (**{card.get('Placement Rank', '')}**) on **{platform}** ({kw} @ {loc})."
                 )
 
     return alerts
@@ -444,6 +330,7 @@ with st.expander("🚨 Recent Background Incident & Alert Log", expanded=True):
         else:
             st.button("📥 Download Current Scan (.csv)", disabled=True, **WIDTH_KWARG)
 
+# Selection Controls
 st.subheader("🎯 Monitoring Scope: Target Keywords & Locations")
 col_sel1, col_sel2 = st.columns(2)
 
@@ -467,7 +354,7 @@ with col_sel2:
         default=[st.session_state.location_list[0]] if st.session_state.location_list else []
     )
     with st.expander("➕ Add Custom Location or Pincode"):
-        new_loc = st.text_input("Enter Locality Name or Pincode (e.g. Vijay Nagar, 560040):").strip()
+        new_loc = st.text_input("Enter Locality Name or Pincode (e.g. Ullal, Vijay Nagar, 560040):").strip()
         if st.button("Add Location") and new_loc:
             if new_loc not in st.session_state.location_list:
                 st.session_state.location_list.append(new_loc)
@@ -483,97 +370,121 @@ with c_fetch:
     st.write("")
     fetch_btn = st.button("🚀 Fetch Shelf Now", type="primary", **WIDTH_KWARG)
 
-# Background timer
-current_time = time.time()
-elapsed_time = current_time - st.session_state.last_scan_time
-required_interval = interval_mins * 60
+# JavaScript Client Bridge for Real-time In-Browser Execution
+if fetch_btn:
+    platforms_to_scan = [chosen_store.capitalize()] if store_scope == "Selected Storefront Only" else [p.capitalize() for p in active_platforms]
+    active_kw = selected_keywords[0] if selected_keywords else "kaju katli"
+    active_loc = selected_locations[0] if selected_locations else "560021"
+    lat, lon, loc_label = resolve_location(active_loc)
 
-if auto_monitor:
-    remaining_time = max(0, int(required_interval - elapsed_time))
-    st.info(f"⏳ Background auto-scan active. Next scan in: {remaining_time // 60}m {remaining_time % 60}s")
+    js_code = f"""
+    <script>
+    (async function() {{
+        const kw = "{active_kw}";
+        const lat = "{lat}";
+        const lon = "{lon}";
+        const locName = "{active_loc}";
+        const results = [];
 
-trigger_scan = fetch_btn or (auto_monitor and elapsed_time > required_interval)
+        // Fetch Blinkit direct from client network
+        try {{
+            const blinkitUrl = "https://blinkit.com/v1/layout/search?q=" + encodeURIComponent(kw);
+            const r = await fetch(blinkitUrl, {{
+                headers: {{ "lat": lat, "lon": lon, "app_client": "consumer_web" }}
+            }});
+            if (r.ok) {{
+                const data = await r.json();
+                const widgets = (data.layout && data.layout.widgets) || [];
+                let overall = 1, ad_r = 1, org_r = 1;
+                for (const w of widgets) {{
+                    const prods = (w.data && w.data.products) || [];
+                    for (const p of prods) {{
+                        const is_ad = Boolean(p.is_sponsored || p.ad_id);
+                        results.push({{
+                            "Platform": "Blinkit",
+                            "Overall Shelf Pos": overall,
+                            "Type": is_ad ? "Sponsored Ad" : "Organic",
+                            "Placement Rank": is_ad ? ("Ad #" + ad_r++) : ("Org #" + org_r++),
+                            "Product Name": p.name || "",
+                            "Brand": p.brand || (p.name ? p.name.split(" ")[0] : "Generic"),
+                            "Price": "₹" + (p.price || 0),
+                            "Search Term": kw,
+                            "Location": locName
+                        }});
+                        overall++;
+                    }}
+                }}
+            }}
+        }} catch(e) {{
+            console.log("Client fetch error:", e);
+        }}
 
-if trigger_scan:
-    if auto_monitor and elapsed_time > required_interval:
-        st.session_state.last_scan_time = current_time
+        // If client returned listings, update Streamlit URL parameter
+        if (results.length > 0) {{
+            const jsonStr = encodeURIComponent(JSON.stringify(results));
+            const currentUrl = new URL(window.parent.location.href);
+            currentUrl.searchParams.set("live_payload", jsonStr);
+            window.parent.location.href = currentUrl.toString();
+        }}
+    }})();
+    </script>
+    """
+    components.html(js_code, height=0)
 
+# Check for Live Payload in URL query parameters
+query_params = st.query_params
+if "live_payload" in query_params:
+    try:
+        raw_payload = urllib.parse.unquote(query_params["live_payload"])
+        parsed_live = json.loads(raw_payload)
+        if parsed_live:
+            # Re-normalize Brand identification
+            for item in parsed_live:
+                item["Brand"] = extract_brand(item.get("Product Name", ""))
+                item["Rank Shift"] = "New"
+            
+            # Cache live run
+            history = load_history()
+            now_str = datetime.now().strftime("%I:%M %p, %d %b")
+            store_name = parsed_live[0].get("Platform", "Blinkit").lower()
+            kw_name = parsed_live[0].get("Search Term", "").lower()
+            loc_name = str(parsed_live[0].get("Location", "")).lower()
+            history[f"{store_name}_{kw_name}_{loc_name}"] = {
+                "timestamp": now_str,
+                "items": parsed_live
+            }
+            save_history(history)
+            st.session_state.shelf_data = parsed_live
+            
+            # Clear parameter to prevent loop
+            del st.query_params["live_payload"]
+            st.rerun()
+    except Exception as e:
+        print(f"Error decoding live payload: {e}")
+
+# Fallback check against cached database
+if fetch_btn and not st.session_state.shelf_data:
+    history = load_history()
+    fallback_items = []
     platforms_to_scan = [chosen_store.capitalize()] if store_scope == "Selected Storefront Only" else [p.capitalize() for p in active_platforms]
 
-    if not selected_keywords:
-        st.warning("⚠️ Please select at least one keyword above.")
-    elif not selected_locations:
-        st.warning("⚠️ Please select at least one location/pincode above.")
-    else:
-        history = load_history()
-        current_time_str = datetime.now().strftime("%I:%M %p, %d %b")
-        collected_items = []
+    for store in platforms_to_scan:
+        for kw in selected_keywords:
+            for loc in selected_locations:
+                cache_key = f"{store.lower()}_{str(kw).lower().strip()}_{str(loc).lower().strip()}"
+                if cache_key in history:
+                    for c in history[cache_key].get("items", []):
+                        copy_c = dict(c)
+                        copy_c["Platform"] = store.capitalize()
+                        copy_c["Search Term"] = kw
+                        copy_c["Location"] = loc
+                        copy_c["Rank Shift"] = "-"
+                        fallback_items.append(copy_c)
+    if fallback_items:
+        st.session_state.shelf_data = fallback_items
+        st.rerun()
 
-        with st.spinner("Executing live extraction using client network..."):
-            for store in platforms_to_scan:
-                for kw in selected_keywords:
-                    for loc in selected_locations:
-                        lat, lon, loc_label = resolve_location(loc)
-                        
-                        # 1. Direct fetch using client network
-                        items = fetch_live_platform_data(store, kw, lat, lon)
-                        
-                        # 2. Local fallback if external connection is blocked
-                        if not items:
-                            cache_key = f"{store.lower()}_{str(kw).lower().strip()}_{str(loc).lower().strip()}"
-                            if cache_key in history:
-                                items = history[cache_key].get("items", [])
-
-                        if not items:
-                            continue
-
-                        cache_key = f"{store.lower()}_{str(kw).lower().strip()}_{str(loc).lower().strip()}"
-                        prev_scan = history.get(cache_key, None)
-                        prev_lookup = {}
-                        if prev_scan:
-                            for p in prev_scan.get("items", []):
-                                p_clean = str(p.get("Product Name", "")).strip().lower()
-                                p_type = str(p.get("Type", "")).strip().lower()
-                                prev_lookup[f"{p_clean}::{p_type}"] = p.get("Overall Shelf Pos")
-
-                        for card in items:
-                            card["Platform"] = store.capitalize()
-                            card["Search Term"] = kw
-                            card["Location"] = loc
-                            card["Location Name"] = loc_label
-
-                            p_name = str(card.get("Product Name", "")).strip()
-                            p_type = str(card.get("Type", "")).strip()
-                            item_key = f"{p_name.lower()}::{p_type.lower()}"
-                            c_pos = int(card["Overall Shelf Pos"])
-
-                            if item_key in prev_lookup:
-                                old_pos = int(prev_lookup[item_key])
-                                delta = old_pos - c_pos
-                                card["Rank Shift"] = f"{'+' if delta > 0 else ''}{delta}" if delta != 0 else "-"
-                            else:
-                                card["Rank Shift"] = "New"
-
-                            collected_items.append(card)
-
-                        history[cache_key] = {
-                            "timestamp": current_time_str,
-                            "items": [{
-                                "Product Name": c["Product Name"],
-                                "Brand": c["Brand"],
-                                "Overall Shelf Pos": c["Overall Shelf Pos"],
-                                "Type": c["Type"],
-                                "Price": c["Price"]
-                            } for c in items]
-                        }
-
-        if collected_items:
-            save_history(history)
-            st.session_state.shelf_data = collected_items
-            st.rerun()
-        else:
-            st.error("No items returned from storefront scanner. Check network permissions or try another locality.")
-
+# Bidding Strategy Engine
 def compute_professional_bidding_matrix(items, enabled_platforms):
     if not items:
         return []
@@ -581,7 +492,6 @@ def compute_professional_bidding_matrix(items, enabled_platforms):
     matrix = []
     df_raw = pd.DataFrame(items)
     grouped = df_raw.groupby(["Platform", "Search Term", "Location"])
-
     normalized_enabled = [p.capitalize() for p in enabled_platforms]
 
     for (plat, kw, loc), group in grouped:
@@ -668,16 +578,17 @@ def compute_professional_bidding_matrix(items, enabled_platforms):
 
     return matrix
 
+# Render UI Dashboard
 if st.session_state.shelf_data:
     df = pd.DataFrame(st.session_state.shelf_data)
-    st.success(f"Displaying {len(df)} total product placements.")
+    st.success(f"Displaying {len(df)} storefront product listings.")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Tracked Items", len(df))
     ad_count = len(df[df["Type"] == "Sponsored Ad"])
     m2.metric("Overall Ad Load (SOV)", f"{(ad_count / len(df) * 100):.1f}%" if len(df) > 0 else "0%")
     m3.metric("Target Brands Detected", len(df[df["Brand"].apply(is_my_brand)]))
-    m4.metric("Locations Scanned", len(df["Location"].unique()) if "Location" in df.columns else 1)
+    m4.metric("Locations In View", len(df["Location"].unique()) if "Location" in df.columns else 1)
 
     st.divider()
 
@@ -813,3 +724,5 @@ if st.session_state.shelf_data:
         return [''] * len(row)
 
     st.dataframe(df.style.apply(style_full, axis=1), height=550, **WIDTH_KWARG)
+else:
+    st.info("Select keyword and location above, then click **'🚀 Fetch Shelf Now'** to load shelf intelligence.")
