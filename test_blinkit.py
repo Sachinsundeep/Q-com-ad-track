@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import urllib.parse
-import urllib.request
 import traceback
 import asyncio
 
@@ -60,7 +59,7 @@ async def get_or_reuse_page(context, target_domain: str):
 
 
 # =====================================================================
-# 1. ZEPTO SCRAPER (VERIFIED WORKING - FROZEN)
+# 1. ZEPTO SCRAPER
 # =====================================================================
 async def scan_zepto(search_query, lat="13.0470976", lon="77.5476596"):
     results = []
@@ -107,7 +106,7 @@ async def scan_zepto(search_query, lat="13.0470976", lon="77.5476596"):
 
         await page.wait_for_timeout(2500)
 
-        raw_items = await page.evaluate(r'''() => {
+        raw_items = await page.evaluate(r"""() => {
             const allLinks = Array.from(document.querySelectorAll('a[href*="/pn/"], a[href*="/p/"]'));
             const cardMap = new Map();
 
@@ -202,20 +201,13 @@ async def scan_zepto(search_query, lat="13.0470976", lon="77.5476596"):
                 const pid = item.href.split('/').filter(Boolean).pop() || ("zep_" + Math.random().toString(36).substr(2, 7));
                 return { id: pid, title: title, price: price, pack: pack, is_ad: isAd };
             });
-        }''')
+        }""")
 
     ad_rank, org_rank, overall = 1, 1, 1
     for card in (raw_items or []):
         clean_title = card["title"].strip()
         if len(clean_title) > 2 and clean_title.lower() != "off":
             brand = extract_brand(clean_title)
-            if "gowardhan" in brand.lower():
-                brand = "Gowardhan"
-            elif "wholicious" in brand.lower():
-                brand = "Wholicious"
-            elif "bolas" in brand.lower():
-                brand = "Bolas"
-
             results.append({
                 "Platform": "Zepto",
                 "Overall Shelf Pos": overall,
@@ -237,7 +229,7 @@ async def scan_zepto(search_query, lat="13.0470976", lon="77.5476596"):
 
 
 # =====================================================================
-# 2. BLINKIT SCRAPER (FROZEN - FRONT-WINDOW TARGETED)
+# 2. BLINKIT SCRAPER
 # =====================================================================
 async def scan_blinkit(search_query, lat="13.0470976", lon="77.5476596"):
     results = []
@@ -277,7 +269,7 @@ async def scan_blinkit(search_query, lat="13.0470976", lon="77.5476596"):
 
         await asyncio.sleep(2.5)
 
-        raw_items = await page.evaluate(r'''() => {
+        raw_items = await page.evaluate(r"""() => {
             const addButtons = Array.from(document.querySelectorAll('*'))
                 .filter(el => el.children.length === 0 && (el.innerText || "").trim() === 'ADD');
 
@@ -304,13 +296,11 @@ async def scan_blinkit(search_query, lat="13.0470976", lon="77.5476596"):
 
             return cards.map(item => {
                 const c = item.el;
-
                 const imgs = Array.from(c.querySelectorAll('img')).map(img => img.getAttribute('src') || '');
                 const hasAdImage = imgs.some(src => src.includes('ad_without_bg') || src.includes('/ui/ad'));
 
                 const allTexts = (c.innerText || '').split('\n').map(s => s.trim());
                 const hasAdText = allTexts.some(t => t === 'Ad' || t === 'AD' || t === 'Sponsored');
-
                 const isAd = hasAdImage || hasAdText;
 
                 const lines = allTexts.filter(Boolean);
@@ -326,7 +316,7 @@ async def scan_blinkit(search_query, lat="13.0470976", lon="77.5476596"):
 
                 return { id: "blk_" + Math.random().toString(36).substr(2, 9), title: title, price: price, pack: pack, is_ad: isAd };
             });
-        }''')
+        }""")
 
     ad_rank, org_rank, overall = 1, 1, 1
     for card in (raw_items or []):
@@ -353,7 +343,7 @@ async def scan_blinkit(search_query, lat="13.0470976", lon="77.5476596"):
 
 
 # =====================================================================
-# 3. INSTAMART SCRAPER (FROZEN - 100% UNTOUCHED)
+# 3. INSTAMART SCRAPER
 # =====================================================================
 async def scan_instamart(search_query, lat="13.0470976", lon="77.5476596"):
     results = []
@@ -403,7 +393,7 @@ async def scan_instamart(search_query, lat="13.0470976", lon="77.5476596"):
             pass
         await asyncio.sleep(1.0)
 
-        raw_items = await page.evaluate(r'''() => {
+        raw_items = await page.evaluate(r"""() => {
             const allCards = Array.from(document.querySelectorAll(
                 '[data-testid*="item-collection-card"], [data-testid*="product-card"], div[class*="_3Rr1X"], div[class*="ProductCard"], div[data-testid*="itemCard"]'
             ));
@@ -516,7 +506,7 @@ async def scan_instamart(search_query, lat="13.0470976", lon="77.5476596"):
 
                 return { id: "im_" + Math.random().toString(36).substr(2, 8), title: title, price: price, pack: pack, is_ad: isAd };
             });
-        }''')
+        }""")
 
     seen_records = set()
     ad_rank, org_rank, overall = 1, 1, 1
@@ -548,9 +538,6 @@ async def scan_instamart(search_query, lat="13.0470976", lon="77.5476596"):
     return results
 
 
-# =====================================================================
-# 4. ENTRYPOINT
-# =====================================================================
 if __name__ == "__main__":
     platform = sys.argv[1].lower() if len(sys.argv) > 1 else "blinkit"
     q = sys.argv[2] if len(sys.argv) > 2 else "kaju katli"
@@ -568,4 +555,4 @@ if __name__ == "__main__":
         print(f"[TEST_BLINKIT ERROR]: {traceback.format_exc()}", file=sys.stderr)
         data = []
 
-    print("__JSON_START__" + json.dumps(data) + "__JSON_END__", flush=True)
+    print("__JSON_START__" + json.dumps(data, ensure_ascii=False) + "__JSON_END__", flush=True)
