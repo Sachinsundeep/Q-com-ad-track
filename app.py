@@ -12,7 +12,7 @@ import altair as alt
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="Quick Commerce Shelf Monitor & Bidding Desk",
+    page_title="Quick Commerce Live Shelf Monitor & Bidding Desk",
     page_icon="⚡",
     layout="wide"
 )
@@ -50,7 +50,7 @@ def resolve_location(pincode: str):
     if clean in PINCODE_MAP:
         loc = PINCODE_MAP[clean]
         return loc["lat"], loc["lon"], f"{loc['name']} ({clean})"
-    return "13.0470976", "77.5476596", f"Custom ({clean})"
+    return "13.0470976", "77.5476596", f"Pincode {clean}"
 
 EXCLUDED_BRANDS = ["anandhaas", "shree anandhaas", "anandhas", "ananda dairy", "ananda"]
 
@@ -79,82 +79,26 @@ def save_history(history_data):
     except Exception as e:
         print(f"Error saving history: {e}")
 
-def export_history_to_excel():
-    history = load_history()
-    all_rows = []
-    for key, data in history.items():
-        parts = key.split("_")
-        store = parts[0].capitalize()
-        kw = parts[1] if len(parts) > 1 else ""
-        pin = parts[2] if len(parts) > 2 else ""
-        scan_time = data.get("timestamp", "")
-        for item in data.get("items", []):
-            all_rows.append({
-                "Scan Timestamp": scan_time,
-                "Platform": store,
-                "Search Keyword": kw,
-                "Pincode": pin,
-                "Overall Shelf Pos": item.get("Overall Shelf Pos"),
-                "Type": item.get("Type"),
-                "Brand": item.get("Brand"),
-                "Product Name": item.get("Product Name"),
-                "Price": item.get("Price"),
-                "Target Brand Flag": "YES" if is_my_brand(item.get("Brand", "")) else "NO"
-            })
-    df_all = pd.DataFrame(all_rows)
-    if df_all.empty:
-        df_all = pd.DataFrame(columns=["Scan Timestamp", "Platform", "Search Keyword", "Pincode", "Overall Shelf Pos", "Type", "Brand", "Product Name", "Price"])
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        df_all.to_excel(writer, index=False, sheet_name='Historical Scans')
-        df_targets = df_all[df_all["Target Brand Flag"] == "YES"]
-        df_targets.to_excel(writer, index=False, sheet_name='Target Brands Shift Log')
-    return buf.getvalue()
+# Session state setup
+if "live_shelf_items" not in st.session_state:
+    st.session_state.live_shelf_items = []
 
-def load_all_items_from_history():
-    history = load_history()
-    items = []
-    for key, data in history.items():
-        parts = key.split("_")
-        store = parts[0].capitalize() if len(parts) > 0 else "Platform"
-        kw = parts[1] if len(parts) > 1 else ""
-        pin = parts[2] if len(parts) > 2 else ""
-        _, _, loc_label = resolve_location(pin)
-        for c in data.get("items", []):
-            entry = dict(c)
-            entry["Platform"] = store
-            entry["Search Term"] = kw
-            entry["Pincode"] = pin
-            entry["Location Name"] = loc_label
-            entry["Rank Shift"] = "-"
-            entry["Placement Rank"] = f"Pos #{entry.get('Overall Shelf Pos', '-')}"
-            items.append(entry)
-    return items
-
-# Discover all known keywords and pincodes dynamically from cache
-all_cached_items = load_all_items_from_history()
-cached_kws = sorted(list({str(i["Search Term"]).strip().lower() for i in all_cached_items if i.get("Search Term")}))
-cached_pins = sorted(list({str(i["Pincode"]).strip() for i in all_cached_items if i.get("Pincode")}))
-
-if not cached_kws:
-    cached_kws = ["kaju katli", "mysore pak", "besan laddu", "sweets"]
-if not cached_pins:
-    cached_pins = ["560021", "560103", "560091", "560034"]
-
-if "keyword_list" not in st.session_state:
-    st.session_state.keyword_list = cached_kws
-
-if "pincode_list" not in st.session_state:
-    st.session_state.pincode_list = cached_pins
-
-if "shelf_data" not in st.session_state or not st.session_state.shelf_data:
-    st.session_state.shelf_data = all_cached_items
+if "last_queried_target" not in st.session_state:
+    st.session_state.last_queried_target = ""
 
 if "last_scan_time" not in st.session_state:
     st.session_state.last_scan_time = time.time()
 
 # Sidebar
 with st.sidebar:
+    st.header("⚡ Scraping Mode")
+    source_mode = st.radio(
+        "Data Source Selection:",
+        ["⚡ Live Real-Time Scan (Direct Storefront)", "📁 Saved History / Cache"],
+        index=0
+    )
+
+    st.divider()
     st.header("🔔 Alert Channels")
     alert_blinkit = st.checkbox("Blinkit Alerts", value=True)
     alert_zepto = st.checkbox("Zepto Alerts", value=True)
@@ -166,16 +110,8 @@ with st.sidebar:
     if alert_instamart: active_platforms.append("Instamart")
 
     st.divider()
-    st.subheader("🎯 Shift Alert Scope")
-    alert_scope = st.radio(
-        "Evaluate rank shifts for:",
-        ["My Brands Only", "Top-5 Competitor Ads Only", "Both (Full Visibility)"],
-        index=0
-    )
-
-    st.divider()
     st.header("💡 Bidding Engine Filter")
-    suggest_blinkit = st.checkbox("Blinkit (Brands Central)", value=True)
+    suggest_blinkit = st.checkbox("Blinkit Ads", value=True)
     suggest_zepto = st.checkbox("Zepto Brand Engine", value=True)
     suggest_instamart = st.checkbox("Swiggy Ads", value=True)
 
@@ -185,43 +121,40 @@ with st.sidebar:
     if suggest_instamart: suggest_platforms.append("Instamart")
 
     st.divider()
-    st.subheader("🔄 Live Polling")
+    st.subheader("🔄 Automated Background Poller")
     auto_monitor = st.checkbox("Enable Auto-Scan Loop", value=False)
     interval_mins = st.slider("Frequency (Minutes)", min_value=1, max_value=60, value=5)
 
-st.title("Quick Commerce Shelf Monitor & Bidding Desk")
-st.caption("Algorithmic bidding recommendations, cannibalization defense, and shelf-share analytics for Anand Sweets & Chak Now.")
+st.title("Quick Commerce Real-Time Shelf Monitor & Bidding Desk")
+st.caption("Live storefront extraction & automated algorithmic bidding recommendations for Anand Sweets and Chak Now.")
 
 st_autorefresh(interval=30 * 1000, key="auto_scan_ticker")
 
-st.subheader("🎯 Monitoring Scope: Target Keywords & Locations")
-col_sel1, col_sel2 = st.columns(2)
+# User Input Controls
+st.subheader("🔍 Live Search & Location Entry")
+c_kw, c_pin = st.columns([2, 1])
 
-with col_sel1:
-    selected_keywords = st.multiselect(
-        "Active Search Keywords:",
-        options=st.session_state.keyword_list,
-        default=[st.session_state.keyword_list[0]] if st.session_state.keyword_list else []
-    )
+with c_kw:
+    typed_keyword = st.text_input(
+        "Enter Search Keyword:",
+        value="besan laddu",
+        placeholder="Type any product (e.g. kaju katli, mysore pak, motichoor laddu, milk cake)..."
+    ).strip().lower()
 
-with col_sel2:
-    selected_pincodes = st.multiselect(
-        "Active Pincodes:",
-        options=st.session_state.pincode_list,
-        default=[st.session_state.pincode_list[0]] if st.session_state.pincode_list else []
-    )
+with c_pin:
+    typed_pincode = st.text_input(
+        "Enter 6-Digit Pincode:",
+        value="560021",
+        placeholder="e.g. 560021, 560103, 560034, 560037..."
+    ).strip()
 
-c_scope, c_store, c_view, c_fetch = st.columns([2.5, 2.5, 2.5, 2])
-with c_scope:
-    store_scope = st.selectbox("Storefront Scope", ["All Enabled Storefronts", "Selected Storefront Only"])
-with c_store:
-    chosen_store = st.selectbox("Active Store", ["Blinkit", "Zepto", "Instamart"])
-with c_view:
-    view_filter_mode = st.selectbox("Dashboard View Mode", ["Show Selected Criteria Only", "Show All Master History"])
-with c_fetch:
+c_plat, c_act = st.columns([2, 1])
+with c_plat:
+    chosen_platform = st.selectbox("Storefront Target", ["Blinkit", "Zepto", "Instamart", "All Storefronts"])
+with c_act:
     st.write("")
     st.write("")
-    fetch_btn = st.button("🚀 Fetch Shelf Now", type="primary", **WIDTH_KWARG)
+    trigger_live_fetch = st.button("🚀 Fetch Live Shelf Now", type="primary", **WIDTH_KWARG)
 
 def execute_single_scan(store_name, kw, pin):
     lat, lon, label = resolve_location(pin)
@@ -242,290 +175,226 @@ def execute_single_scan(store_name, kw, pin):
             data = json.loads(json_match.group(1))
             return data, label, None
         else:
-            return [], label, "Chrome CDP Port 9222 host is offline."
+            return [], label, f"Scraper returned no data. Ensure Chrome is running on Port 9222.\nOutput: {proc.stdout[:250]}"
     except Exception as e:
         return [], label, f"Execution Error: {str(e)}"
 
-# Background scan execution
+# Trigger Scan Conditions
 current_time = time.time()
 elapsed_time = current_time - st.session_state.last_scan_time
 required_interval = interval_mins * 60
 
-trigger_scan = fetch_btn or (auto_monitor and elapsed_time > required_interval)
+is_auto_due = auto_monitor and (elapsed_time > required_interval)
+should_scan = trigger_live_fetch or is_auto_due
 
-if trigger_scan:
-    if auto_monitor and elapsed_time > required_interval:
+if should_scan and source_mode.startswith("⚡"):
+    if is_auto_due:
         st.session_state.last_scan_time = current_time
 
-    platforms_to_scan = [chosen_store.capitalize()] if store_scope == "Selected Storefront Only" else [p.capitalize() for p in active_platforms]
-
-    if selected_keywords and selected_pincodes:
+    if not typed_keyword:
+        st.warning("⚠️ Please enter a search keyword.")
+    elif len(typed_pincode) < 6:
+        st.warning("⚠️ Please enter a valid 6-digit pincode.")
+    else:
+        target_stores = ["Blinkit", "Zepto", "Instamart"] if chosen_platform == "All Storefronts" else [chosen_platform]
         history = load_history()
         current_time_str = datetime.now().strftime("%I:%M %p, %d %b")
-        collected_items = []
-        scanner_offline = False
+        live_results = []
+        errors = []
 
-        with st.spinner("Connecting to live storefront engine..."):
-            for store in platforms_to_scan:
-                for kw in selected_keywords:
-                    for pin in selected_pincodes:
-                        items, loc_label, err = execute_single_scan(store, kw, pin)
-                        if err and "CDP Port 9222" in err:
-                            scanner_offline = True
-                            break
-                        if not items:
-                            continue
+        with st.spinner(f"Connecting to live Chrome CDP session to scan '{typed_keyword}' at {typed_pincode}..."):
+            for st_name in target_stores:
+                scanned_cards, loc_label, err = execute_single_scan(st_name, typed_keyword, typed_pincode)
+                if err:
+                    errors.append(f"**[{st_name}]**: {err}")
+                if not scanned_cards:
+                    continue
 
-                        cache_key = f"{store.lower()}_{kw.lower().strip()}_{pin.strip()}"
-                        for card in items:
-                            card["Platform"] = store.capitalize()
-                            card["Search Term"] = kw
-                            card["Pincode"] = pin
-                            card["Location Name"] = loc_label
-                            collected_items.append(card)
+                cache_key = f"{st_name.lower()}_{typed_keyword.lower().strip()}_{typed_pincode.strip()}"
+                prev_scan = history.get(cache_key, None)
+                prev_lookup = {}
+                if prev_scan:
+                    for p in prev_scan.get("items", []):
+                        p_clean = str(p.get("Product Name", "")).strip().lower()
+                        p_type = str(p.get("Type", "")).strip().lower()
+                        prev_lookup[f"{p_clean}::{p_type}"] = p.get("Overall Shelf Pos")
 
-                        history[cache_key] = {
-                            "timestamp": current_time_str,
-                            "items": [{
-                                "Product Name": c["Product Name"],
-                                "Brand": c["Brand"],
-                                "Overall Shelf Pos": c["Overall Shelf Pos"],
-                                "Type": c["Type"],
-                                "Price": c["Price"]
-                            } for c in items]
-                        }
+                for card in scanned_cards:
+                    card["Platform"] = st_name.capitalize()
+                    card["Search Term"] = typed_keyword
+                    card["Pincode"] = typed_pincode
+                    card["Location Name"] = loc_label
 
-        if collected_items:
+                    p_name = str(card.get("Product Name", "")).strip()
+                    p_type = str(card.get("Type", "")).strip()
+                    item_key = f"{p_name.lower()}::{p_type.lower()}"
+                    c_pos = int(card["Overall Shelf Pos"])
+
+                    if item_key in prev_lookup:
+                        old_pos = int(prev_lookup[item_key])
+                        delta = old_pos - c_pos
+                        card["Rank Shift"] = f"{'+' if delta > 0 else ''}{delta}" if delta != 0 else "-"
+                    else:
+                        card["Rank Shift"] = "New"
+
+                    live_results.append(card)
+
+                # Update cache
+                history[cache_key] = {
+                    "timestamp": current_time_str,
+                    "items": [{
+                        "Product Name": c["Product Name"],
+                        "Brand": c["Brand"],
+                        "Overall Shelf Pos": c["Overall Shelf Pos"],
+                        "Type": c["Type"],
+                        "Price": c["Price"]
+                    } for c in scanned_cards]
+                }
+
+        if live_results:
             save_history(history)
-            st.session_state.shelf_data = load_all_items_from_history()
+            st.session_state.live_shelf_items = live_results
+            st.session_state.last_queried_target = f"{typed_keyword.title()} @ {typed_pincode} ({chosen_platform})"
             st.rerun()
-        elif scanner_offline:
-            st.info("☁️ **Cloud Viewer Mode Active**: Displaying historical database scans. Live scraping connects through your local Chrome CDP session.")
-
-# =====================================================================
-# DATA FILTERING LAYER (SYNCS UI WITH ACTIVE DROPDOWNS)
-# =====================================================================
-raw_df = pd.DataFrame(st.session_state.shelf_data)
-
-if not raw_df.empty:
-    if view_filter_mode == "Show Selected Criteria Only":
-        filter_mask = pd.Series(True, index=raw_df.index)
-        if selected_keywords:
-            filter_mask &= raw_df["Search Term"].str.lower().isin([k.lower() for k in selected_keywords])
-        if selected_pincodes:
-            filter_mask &= raw_df["Pincode"].astype(str).isin([str(p) for p in selected_pincodes])
-        if store_scope == "Selected Storefront Only":
-            filter_mask &= raw_df["Platform"].str.capitalize() == chosen_store.capitalize()
-        elif active_platforms:
-            filter_mask &= raw_df["Platform"].str.capitalize().isin([p.capitalize() for p in active_platforms])
-        
-        display_df = raw_df[filter_mask].reset_index(drop=True)
-    else:
-        display_df = raw_df.copy()
-else:
-    display_df = pd.DataFrame()
-
-# Alert generator
-def generate_live_alerts(items, active_channels, scope_filter):
-    if not active_channels or items.empty:
-        return []
-
-    history = load_history()
-    alerts = []
-
-    for _, card in items.iterrows():
-        platform = card.get("Platform", "").capitalize()
-        if platform not in [c.capitalize() for c in active_channels]:
-            continue
-
-        kw = card.get("Search Term", "")
-        pin = card.get("Pincode", "")
-        store_key = platform.lower()
-        cache_key = f"{store_key}_{str(kw).lower().strip()}_{str(pin).strip()}"
-        
-        prev_scan = history.get(cache_key, None)
-        prev_time = prev_scan.get("timestamp", "prior scan") if prev_scan else ""
-        
-        prev_lookup = {}
-        if prev_scan:
-            for p in prev_scan.get("items", []):
-                p_clean = str(p.get("Product Name", "")).strip().lower()
-                p_type = str(p.get("Type", "")).strip().lower()
-                prev_lookup[f"{p_clean}::{p_type}"] = p.get("Overall Shelf Pos")
-
-        p_name = str(card.get("Product Name", "")).strip()
-        p_type = str(card.get("Type", "")).strip()
-        item_key = f"{p_name.lower()}::{p_type.lower()}"
-        
-        c_pos = int(card.get("Overall Shelf Pos", 0))
-        brand_name = card.get("Brand", "")
-        is_mine = is_my_brand(brand_name)
-        is_ad = p_type == "Sponsored Ad"
-
-        qualifies = False
-        if scope_filter == "My Brands Only" and is_mine:
-            qualifies = True
-        elif scope_filter == "Top-5 Competitor Ads Only" and is_ad and not is_mine and c_pos <= 5:
-            qualifies = True
-        elif scope_filter == "Both (Full Visibility)":
-            if is_mine or (is_ad and not is_mine and c_pos <= 5):
-                qualifies = True
-
-        if not qualifies:
-            continue
-
-        type_tag = "*(Sponsored Ad)*" if is_ad else "*(Organic)*"
-
-        if item_key in prev_lookup:
-            old_pos = int(prev_lookup[item_key])
-            delta = old_pos - c_pos
-            if delta > 0:
-                alerts.append(f"🟢 **Rank Gain**: {brand_name} '**{p_name}**' {type_tag} rose from **Pos #{old_pos}** ➔ **Pos #{c_pos}** (+{delta}) on **{platform}** ({kw} @ {pin}).")
-            elif delta < 0:
-                alerts.append(f"🔻 **Rank Drop**: {brand_name} '**{p_name}**' {type_tag} slipped from **Pos #{old_pos}** ➔ **Pos #{c_pos}** ({delta}) on **{platform}** ({kw} @ {pin}).")
         else:
-            if is_mine:
-                alerts.append(f"🟢 **Rank Track**: {brand_name} '**{p_name}**' {type_tag} at **Pos #{c_pos}** on **{platform}** ({kw} @ {pin}).")
+            st.error("No items returned from the live scraper. Check if Chrome Debugging is running on port 9222.")
+            if errors:
+                for er in errors:
+                    st.markdown(er)
 
-    return alerts
-
-with st.expander("🚨 Recent Incident & Shift Alert Log", expanded=True):
-    alerts = generate_live_alerts(display_df, active_platforms, alert_scope)
-    if alerts:
-        for a in alerts[:15]:
-            st.markdown(f"- {a}")
+# Resolve Display Dataset
+if source_mode.startswith("⚡"):
+    display_data = st.session_state.live_shelf_items
+    data_label = f"Live Extracted Placements: {st.session_state.last_queried_target}" if st.session_state.last_queried_target else "No live query triggered yet. Click 'Fetch Live Shelf Now' above."
+else:
+    history = load_history()
+    cache_key = f"{chosen_platform.lower()}_{typed_keyword.lower().strip()}_{typed_pincode.strip()}"
+    cached_entry = history.get(cache_key, None)
+    if cached_entry:
+        items = cached_entry.get("items", [])
+        for it in items:
+            it["Platform"] = chosen_platform.capitalize()
+            it["Search Term"] = typed_keyword
+            it["Pincode"] = typed_pincode
+            it["Location Name"] = resolve_location(typed_pincode)[2]
+            it["Rank Shift"] = "-"
+            it["Placement Rank"] = f"Pos #{it.get('Overall Shelf Pos', '-')}"
+        display_data = items
+        data_label = f"Displaying Cache for '{typed_keyword}' @ {typed_pincode} ({cached_entry.get('timestamp', 'Prior')})"
     else:
-        st.write("No matching alert events for current selection.")
+        display_data = []
+        data_label = f"No historical scan found for '{typed_keyword}' at pincode '{typed_pincode}' on {chosen_platform}."
 
-    st.divider()
-    st.markdown("**Export Comprehensive Shelf & Shift Data:**")
-    dl_c1, dl_c2 = st.columns([1.5, 1.5])
-    with dl_c1:
-        excel_history_data = export_history_to_excel()
-        st.download_button(
-            "📊 Download Shelf History (.xlsx)",
-            data=excel_history_data,
-            file_name="shelf_history_master.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            **WIDTH_KWARG
-        )
-    with dl_c2:
-        if not display_df.empty:
-            st.download_button(
-                "📥 Download Current View (.csv)",
-                data=display_df.to_csv(index=False).encode('utf-8'),
-                file_name="shelf_filtered_view.csv",
-                mime="text/csv",
-                **WIDTH_KWARG
-            )
+# UI Render
+st.divider()
 
-# Bidding Desk Matrix Engine
-def compute_professional_bidding_matrix(df_subset, enabled_platforms):
-    if df_subset.empty or "Search Term" not in df_subset.columns:
-        return []
-
-    matrix = []
-    grouped = df_subset.groupby(["Platform", "Search Term", "Pincode"])
-    normalized_enabled = [p.capitalize() for p in enabled_platforms]
-
-    for (plat, kw, pin), group in grouped:
-        if str(plat).capitalize() not in normalized_enabled:
-            continue
-
-        my_skus = group[group["Brand"].apply(is_my_brand)]
-        competitors = group[~group["Brand"].apply(is_my_brand)]
-
-        my_organic = my_skus[my_skus["Type"] == "Organic"]
-        top_org_pos = my_organic["Overall Shelf Pos"].min() if not my_organic.empty else 999
-        top_org_item = my_organic[my_organic["Overall Shelf Pos"] == top_org_pos].iloc[0] if not my_organic.empty else None
-
-        comp_ads = competitors[competitors["Type"] == "Sponsored Ad"]
-        comp_slot1 = comp_ads[comp_ads["Overall Shelf Pos"] <= 2].iloc[0] if not comp_ads[comp_ads["Overall Shelf Pos"] <= 2].empty else None
-
-        for _, row in my_skus.iterrows():
-            title = row["Product Name"]
-            pos = int(row["Overall Shelf Pos"])
-            is_ad = row["Type"] == "Sponsored Ad"
-            shift = row.get("Rank Shift", "-")
-
-            action_badge = "⚪ MAINTAIN BID"
-            priority = "LOW"
-            target_placement = "Sustain Placement"
-            cpc_shift = "Hold (0%)"
-            budget_advice = "Normal Daily Cap"
-            rationale = "Listing maintains acceptable positioning without immediate auction threat."
-
-            if is_ad and top_org_pos <= 3:
-                action_badge = "🛑 PAUSE / REDUCE CPC"
-                priority = "CRITICAL"
-                target_placement = f"Organic Top-3 Locked (Pos #{top_org_pos})"
-                cpc_shift = "-30% to -40% CPC Reduction"
-                budget_advice = "Reallocate 50% Budget to Deficit Dark Stores"
-                rationale = f"Organic listing '{top_org_item['Product Name']}' is secured at Pos #{top_org_pos}. Paying for an ad here cannibalizes free organic conversions."
-
-            elif is_ad and pos > 4:
-                action_badge = "🚀 BOOST BID (SURGE TO ROW 1)"
-                priority = "CRITICAL"
-                target_placement = "Top-of-Fold Row 1 (Pos 1–4)"
-                cpc_shift = "+20% to +30% Bid Surge"
-                budget_advice = "Increase Daily Budget Cap (+20%)"
-                rationale = f"Ad cleared at Pos #{pos} (Row 2+). Click-through rate decays significantly below Row 1. Surge bid to win Slot 1–4."
-
-            elif comp_slot1 is not None and (pos > int(comp_slot1["Overall Shelf Pos"])):
-                action_badge = "🛡️ DEFENSIVE COUNTER-BID"
-                priority = "HIGH"
-                target_placement = "Capture Ad Slot #1 (Pos 1–2)"
-                cpc_shift = "+15% to +20% Surge"
-                budget_advice = "Increase Daily Budget Cap (+15%)"
-                rationale = f"Competitor '{comp_slot1['Brand']}' took Ad Slot #{comp_slot1['Overall Shelf Pos']}. Outbid to protect brand conversion."
-
-            elif not is_ad and pos >= 4:
-                action_badge = "📢 ACTIVATE SPONSORED BID"
-                priority = "HIGH"
-                target_placement = "Sponsored Slot #1 or #2"
-                cpc_shift = "Set Category Benchmark CPC"
-                budget_advice = "Open Dedicated Campaign Line"
-                rationale = f"Organic visibility is drifting at Pos #{pos}. Activating a sponsored ad pushes this SKU back into row 1."
-
-            elif is_ad and pos <= 3:
-                action_badge = "🟢 LOCK TOP POSITION"
-                priority = "MEDIUM"
-                target_placement = f"Hold Slot #{pos}"
-                cpc_shift = "Test -5% Decrement"
-                budget_advice = "Sustain Current Cap"
-                rationale = "Holding premium ad placement. Incrementally shave CPC by 5% to discover lowest winning clearing bid."
-
-            matrix.append({
-                "Urgency": priority,
-                "Platform": plat,
-                "Keyword": kw,
-                "Pincode": pin,
-                "Target SKU": title,
-                "Current Position": f"Pos #{pos}",
-                "Shift": shift,
-                "Recommended Action": action_badge,
-                "Target Placement": target_placement,
-                "Suggested CPC Shift": cpc_shift,
-                "Budget Sizing": budget_advice,
-                "Commercial Rationale": rationale
-            })
-
-    return matrix
-
-if not display_df.empty:
-    st.success(f"Displaying {len(display_df)} matching storefront listings.")
+if display_data:
+    df = pd.DataFrame(display_data)
+    st.success(f"{data_label} — Found {len(df)} listings.")
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Selected Items", len(display_df))
-    ad_count = len(display_df[display_df["Type"] == "Sponsored Ad"])
-    m2.metric("Ad Load (SOV)", f"{(ad_count / len(display_df) * 100):.1f}%" if len(display_df) > 0 else "0%")
-    m3.metric("Target Brands Detected", len(display_df[display_df["Brand"].apply(is_my_brand)]))
-    m4.metric("Locations In View", len(display_df["Pincode"].unique()))
+    m1.metric("Tracked Placements", len(df))
+    ad_count = len(df[df["Type"] == "Sponsored Ad"])
+    m2.metric("Ad Load (SOV)", f"{(ad_count / len(df) * 100):.1f}%" if len(df) > 0 else "0%")
+    m3.metric("Target Brands (Anand / Chak Now)", len(df[df["Brand"].apply(is_my_brand)]))
+    m4.metric("Storefront Target", df["Platform"].iloc[0] if not df.empty else "N/A")
 
     st.divider()
 
-    st.subheader("💡 Professional Quick Commerce Bidding Desk")
-    bidding_matrix = compute_professional_bidding_matrix(display_df, suggest_platforms)
+    # Bidding Desk
+    st.subheader("💡 Actionable Bidding Plan (Live Storefront Feed)")
+    
+    def compute_live_bidding_matrix(records, platforms):
+        matrix = []
+        raw = pd.DataFrame(records)
+        grouped = raw.groupby(["Platform", "Search Term", "Pincode"])
+        norm_plats = [p.capitalize() for p in platforms]
+
+        for (plat, kw, pin), group in grouped:
+            if str(plat).capitalize() not in norm_plats:
+                continue
+
+            my_skus = group[group["Brand"].apply(is_my_brand)]
+            competitors = group[~group["Brand"].apply(is_my_brand)]
+
+            my_organic = my_skus[my_skus["Type"] == "Organic"]
+            top_org_pos = my_organic["Overall Shelf Pos"].min() if not my_organic.empty else 999
+            top_org_item = my_organic[my_organic["Overall Shelf Pos"] == top_org_pos].iloc[0] if not my_organic.empty else None
+
+            comp_ads = competitors[competitors["Type"] == "Sponsored Ad"]
+            comp_slot1 = comp_ads[comp_ads["Overall Shelf Pos"] <= 2].iloc[0] if not comp_ads[comp_ads["Overall Shelf Pos"] <= 2].empty else None
+
+            for _, row in my_skus.iterrows():
+                title = row["Product Name"]
+                pos = int(row["Overall Shelf Pos"])
+                is_ad = row["Type"] == "Sponsored Ad"
+                shift = row.get("Rank Shift", "-")
+
+                action_badge = "⚪ MAINTAIN BID"
+                priority = "LOW"
+                target_placement = "Sustain Placement"
+                cpc_shift = "Hold (0%)"
+                budget_advice = "Normal Daily Cap"
+                rationale = "Listing maintains acceptable positioning."
+
+                if is_ad and top_org_pos <= 3:
+                    action_badge = "🛑 PAUSE / REDUCE CPC"
+                    priority = "CRITICAL"
+                    target_placement = f"Organic Top-3 Locked (Pos #{top_org_pos})"
+                    cpc_shift = "-30% to -40% CPC Reduction"
+                    budget_advice = "Reallocate 50% Budget to Deficit Dark Stores"
+                    rationale = f"Organic listing '{top_org_item['Product Name']}' is secured at Pos #{top_org_pos}. Paying for an ad cannibalizes free organic conversions."
+
+                elif is_ad and pos > 4:
+                    action_badge = "🚀 BOOST BID (SURGE TO ROW 1)"
+                    priority = "CRITICAL"
+                    target_placement = "Top-of-Fold Row 1 (Pos 1–4)"
+                    cpc_shift = "+20% to +30% Bid Surge"
+                    budget_advice = "Increase Daily Budget Cap (+20%)"
+                    rationale = f"Ad cleared at Pos #{pos} (Row 2+). Click-through rate decays significantly below Row 1."
+
+                elif comp_slot1 is not None and (pos > int(comp_slot1["Overall Shelf Pos"])):
+                    action_badge = "🛡️ DEFENSIVE COUNTER-BID"
+                    priority = "HIGH"
+                    target_placement = "Capture Ad Slot #1 (Pos 1–2)"
+                    cpc_shift = "+15% to +20% Surge"
+                    budget_advice = "Increase Daily Budget Cap (+15%)"
+                    rationale = f"Competitor '{comp_slot1['Brand']}' took Ad Slot #{comp_slot1['Overall Shelf Pos']}. Outbid to protect customer demand."
+
+                elif not is_ad and pos >= 4:
+                    action_badge = "📢 ACTIVATE SPONSORED BID"
+                    priority = "HIGH"
+                    target_placement = "Sponsored Slot #1 or #2"
+                    cpc_shift = "Set Category Benchmark CPC"
+                    budget_advice = "Open Dedicated Campaign Line"
+                    rationale = f"Organic visibility is drifting at Pos #{pos}. Activating a sponsored ad pushes this SKU back to the first row."
+
+                elif is_ad and pos <= 3:
+                    action_badge = "🟢 LOCK TOP POSITION"
+                    priority = "MEDIUM"
+                    target_placement = f"Hold Slot #{pos}"
+                    cpc_shift = "Test -5% Decrement"
+                    budget_advice = "Sustain Current Cap"
+                    rationale = "Holding premium ad placement. Incrementally shave CPC by 5% to discover lowest winning clearing bid."
+
+                matrix.append({
+                    "Urgency": priority,
+                    "Platform": plat,
+                    "Keyword": kw,
+                    "Pincode": pin,
+                    "Target SKU": title,
+                    "Current Position": f"Pos #{pos} ({row.get('Placement Rank', '')})",
+                    "Shift": shift,
+                    "Recommended Action": action_badge,
+                    "Target Placement": target_placement,
+                    "Suggested CPC Shift": cpc_shift,
+                    "Budget Sizing": budget_advice,
+                    "Commercial Rationale": rationale
+                })
+
+        return matrix
+
+    bidding_matrix = compute_live_bidding_matrix(display_data, suggest_platforms)
 
     if bidding_matrix:
         b_df = pd.DataFrame(bidding_matrix)
@@ -545,47 +414,24 @@ if not display_df.empty:
         with c_export_bid:
             bid_buf = io.BytesIO()
             with pd.ExcelWriter(bid_buf, engine='openpyxl') as writer:
-                b_df.to_excel(writer, index=False, sheet_name='ActionableBiddingPlan')
+                b_df.to_excel(writer, index=False, sheet_name='LiveBiddingPlan')
             st.download_button(
-                "📥 Export Bidding Action Sheet (.xlsx)",
+                "📥 Export Live Bidding Action Sheet (.xlsx)",
                 data=bid_buf.getvalue(),
-                file_name="qcom_bidding_action_plan.xlsx",
+                file_name="qcom_live_bidding_plan.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 **WIDTH_KWARG
             )
 
-        st.dataframe(b_df.style.apply(style_bidding_table, axis=1), height=310, **WIDTH_KWARG)
+        st.dataframe(b_df.style.apply(style_bidding_table, axis=1), height=280, **WIDTH_KWARG)
     else:
-        st.info("No target brand items requiring bidding intervention in the selected view.")
+        st.info("No target brand items requiring bidding intervention in this live storefront scan.")
 
     st.divider()
 
-    st.subheader("📊 Brand Shelf Share (Target vs. Competitors)")
-    brand_counts = display_df["Brand"].value_counts().reset_index()
-    brand_counts.columns = ["Brand", "Count"]
-    brand_counts["Classification"] = brand_counts["Brand"].apply(
-        lambda b: "My Brand (Anand / Chak Now)" if is_my_brand(b) else "Competitor"
-    )
+    # Master Table
+    st.subheader("📋 Real-Time Storefront Shelf Inventory")
 
-    chart = alt.Chart(brand_counts).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-        x=alt.X('Brand:N', sort='-y', title="Brand"),
-        y=alt.Y('Count:Q', title="SKUs on Shelf"),
-        color=alt.Color(
-            'Classification:N',
-            scale=alt.Scale(
-                domain=['My Brand (Anand / Chak Now)', 'Competitor'],
-                range=['#28a745', '#4a5568']
-            ),
-            legend=alt.Legend(title="Ownership")
-        ),
-        tooltip=['Brand', 'Count', 'Classification']
-    ).properties(height=320)
-
-    st.altair_chart(chart, **WIDTH_KWARG)
-
-    st.divider()
-
-    st.subheader("📋 Complete Master Shelf Inventory")
     def style_full(row):
         is_mine = is_my_brand(row.get("Brand", ""))
         is_ad = row.get("Type", "") == "Sponsored Ad"
@@ -597,9 +443,10 @@ if not display_df.empty:
             return ['background-color: #fef08a; color: #854d0e; font-weight: bold;'] * len(row)
         return [''] * len(row)
 
-    cols_order = ["Product Name", "Brand", "Overall Shelf Pos", "Type", "Price", "Platform", "Search Term", "Pincode", "Location Name", "Rank Shift"]
-    existing_cols = [c for c in cols_order if c in display_df.columns]
+    cols_order = ["Product Name", "Brand", "Overall Shelf Pos", "Placement Rank", "Type", "Price", "Platform", "Search Term", "Pincode", "Location Name", "Rank Shift"]
+    existing_cols = [c for c in cols_order if c in df.columns]
 
-    st.dataframe(display_df[existing_cols].style.apply(style_full, axis=1), height=500, **WIDTH_KWARG)
+    st.dataframe(df[existing_cols].style.apply(style_full, axis=1), height=500, **WIDTH_KWARG)
+
 else:
-    st.warning("No listings found matching your selected Keyword, Pincode, and Platform filters.")
+    st.info(f"{data_label}")
