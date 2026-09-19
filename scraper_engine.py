@@ -53,6 +53,14 @@ def extract_brand(title: str) -> str:
 
 def fetch_blinkit_live(query: str, lat: str = "13.0470976", lon: str = "77.5476596"):
     results = []
+    encoded_q = urllib.parse.quote(query.strip())
+    
+    # Primary & Mirror Relay Endpoints
+    target_urls = [
+        f"https://blinkit.com/v1/layout/search?q={encoded_q}",
+        f"https://api.allorigins.win/raw?url={urllib.parse.quote(f'https://blinkit.com/v1/layout/search?q={encoded_q}')}"
+    ]
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "lat": str(lat),
@@ -60,44 +68,47 @@ def fetch_blinkit_live(query: str, lat: str = "13.0470976", lon: str = "77.54765
         "app_client": "consumer_web",
         "accept": "application/json, text/plain, */*"
     }
-    url = f"https://blinkit.com/v1/layout/search?q={urllib.parse.quote(query)}"
-    
-    try:
-        r = requests.get(url, headers=headers, impersonate="chrome124", timeout=12)
-        if r.status_code == 200:
-            data = r.json()
-            widgets = data.get("layout", {}).get("widgets", [])
-            overall_pos = 1
-            ad_rank, org_rank = 1, 1
 
-            for w in widgets:
-                for product in w.get("data", {}).get("products", []):
-                    title = product.get("name", "").strip()
-                    if not title:
-                        continue
+    for url in target_urls:
+        try:
+            r = requests.get(url, headers=headers, impersonate="chrome124", timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                widgets = data.get("layout", {}).get("widgets", [])
+                overall_pos = 1
+                ad_rank, org_rank = 1, 1
 
-                    is_ad = product.get("is_sponsored", False) or product.get("ad_id") is not None
-                    price = f"₹{product.get('price', 0)}"
-                    pack = product.get("unit", "Standard")
-                    brand = extract_brand(title)
+                for w in widgets:
+                    for product in w.get("data", {}).get("products", []):
+                        title = product.get("name", "").strip()
+                        if not title:
+                            continue
 
-                    results.append({
-                        "Platform": "Blinkit",
-                        "Overall Shelf Pos": overall_pos,
-                        "Placement Rank": f"Ad #{ad_rank}" if is_ad else f"Org #{org_rank}",
-                        "Type": "Sponsored Ad" if is_ad else "Organic",
-                        "Product Name": title,
-                        "Brand": brand,
-                        "Price": price,
-                        "Pack Size": pack
-                    })
-                    if is_ad:
-                        ad_rank += 1
-                    else:
-                        org_rank += 1
-                    overall_pos += 1
-    except Exception as e:
-        print(f"Blinkit live fetch error: {e}")
+                        is_ad = product.get("is_sponsored", False) or (product.get("ad_id") is not None)
+                        price = f"₹{product.get('price', 0)}"
+                        pack = product.get("unit", "Standard")
+                        brand = extract_brand(title)
+
+                        results.append({
+                            "Platform": "Blinkit",
+                            "Overall Shelf Pos": overall_pos,
+                            "Placement Rank": f"Ad #{ad_rank}" if is_ad else f"Org #{org_rank}",
+                            "Type": "Sponsored Ad" if is_ad else "Organic",
+                            "Product Name": title,
+                            "Brand": brand,
+                            "Price": price,
+                            "Pack Size": pack
+                        })
+                        if is_ad:
+                            ad_rank += 1
+                        else:
+                            org_rank += 1
+                        overall_pos += 1
+
+                if results:
+                    break
+        except Exception:
+            continue
 
     return results
 
@@ -111,9 +122,9 @@ def fetch_zepto_live(query: str, lat: str = "13.0470976", lon: str = "77.5476596
         "compatible_mode": "true"
     }
     url = f"https://api.zeptonow.com/api/v3/search?query={urllib.parse.quote(query)}&pageNumber=1&mode=MANUAL"
-    
+
     try:
-        r = requests.get(url, headers=headers, impersonate="chrome124", timeout=12)
+        r = requests.get(url, headers=headers, impersonate="chrome124", timeout=10)
         if r.status_code == 200:
             data = r.json()
             layout = data.get("layout", [])
@@ -149,8 +160,8 @@ def fetch_zepto_live(query: str, lat: str = "13.0470976", lon: str = "77.5476596
                     else:
                         org_rank += 1
                     overall_pos += 1
-    except Exception as e:
-        print(f"Zepto live fetch error: {e}")
+    except Exception:
+        pass
 
     return results
 
@@ -165,7 +176,7 @@ def fetch_instamart_live(query: str, lat: str = "13.0470976", lon: str = "77.547
     url = f"https://www.swiggy.com/api/instamart/search?query={encoded}&lat={lat}&lng={lon}"
 
     try:
-        r = requests.get(url, headers=headers, impersonate="chrome124", timeout=12)
+        r = requests.get(url, headers=headers, impersonate="chrome124", timeout=10)
         if r.status_code == 200:
             data = r.json()
             cards = data.get("data", {}).get("widgets", [])
@@ -178,7 +189,7 @@ def fetch_instamart_live(query: str, lat: str = "13.0470976", lon: str = "77.547
                     if not title:
                         continue
 
-                    is_ad = prod.get("is_sponsored", False) or prod.get("ad_info") is not None
+                    is_ad = prod.get("is_sponsored", False) or (prod.get("ad_info") is not None)
                     price_val = prod.get("price", {}).get("offer_price", 0)
                     price = f"₹{price_val}" if price_val else "₹99"
                     pack = prod.get("quantity", "Standard")
@@ -199,7 +210,7 @@ def fetch_instamart_live(query: str, lat: str = "13.0470976", lon: str = "77.547
                     else:
                         org_rank += 1
                     overall_pos += 1
-    except Exception as e:
-        print(f"Instamart live fetch error: {e}")
+    except Exception:
+        pass
 
     return results
