@@ -132,7 +132,7 @@ if should_run:
         lat, lon, loc_label = resolve_location(target_pin)
         collected_live = []
 
-        with st.spinner(f"Extracting real-time catalog for '{target_kw}' at {loc_label}..."):
+        with st.spinner(f"Connecting to live storefronts for '{target_kw}' at {loc_label}..."):
             if "Blinkit" in enabled_platforms:
                 b_items = fetch_blinkit_live(target_kw, lat, lon)
                 for item in b_items:
@@ -158,7 +158,6 @@ if should_run:
                     collected_live.append(item)
 
         if collected_live:
-            # Rank shift analysis against historical scans
             history = load_history()
             now_str = datetime.now().strftime("%I:%M %p, %d %b")
 
@@ -180,7 +179,6 @@ if should_run:
                 else:
                     card["Rank Shift"] = "New"
 
-            # Cache the latest run
             for store_name in enabled_platforms:
                 s_lower = store_name.lower()
                 ckey = f"{s_lower}_{target_kw}_{target_pin}"
@@ -193,16 +191,18 @@ if should_run:
             save_history(history)
 
             st.session_state.current_view_items = collected_live
-            st.session_state.last_query_label = f"Live Results: '{target_kw.title()}' at {loc_label}"
+            st.session_state.last_query_label = f"🟢 LIVE Storefront Scan: '{target_kw.title()}' at {loc_label}"
             st.rerun()
         else:
-            # Fallback to local history if live endpoints are temporarily unreachable
+            # Check for existing data in history matching the requested keyword
             history = load_history()
             fallback_items = []
+            matched_time = ""
             for store_name in enabled_platforms:
                 ckey = f"{store_name.lower()}_{target_kw}_{target_pin}"
                 cached = history.get(ckey, None)
                 if cached:
+                    matched_time = cached.get("timestamp", "")
                     for it in cached.get("items", []):
                         it_copy = dict(it)
                         it_copy["Platform"] = store_name
@@ -214,12 +214,13 @@ if should_run:
             
             if fallback_items:
                 st.session_state.current_view_items = fallback_items
-                st.session_state.last_query_label = f"Showing Cached Fallback: '{target_kw.title()}' at {loc_label}"
-                st.info("Live network connection busy. Loaded verified historical shelf data.")
+                st.session_state.last_query_label = f"📁 Database Scan: '{target_kw.title()}' at {loc_label} ({matched_time})"
                 st.rerun()
             else:
-                st.error("No product listings returned for this specific search term and pincode.")
-
+                # Clear stale memory from previous queries
+                st.session_state.current_view_items = []
+                st.session_state.last_query_label = f"⚠️ No listings found for '{target_kw}' at Pincode {target_pin} on {', '.join(enabled_platforms)}."
+                st.rerun()
 # Rendering layer
 st.divider()
 
