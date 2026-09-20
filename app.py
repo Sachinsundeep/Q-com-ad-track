@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import subprocess
 import json
 import io
 import re
@@ -9,9 +10,6 @@ import time
 from datetime import datetime
 import altair as alt
 from streamlit_autorefresh import st_autorefresh
-import streamlit.components.v1 as components
-import urllib.parse
-from geopy.geocoders import Nominatim
 
 st.set_page_config(
     page_title="Quick Commerce Shelf Monitor & Bidding Desk",
@@ -19,7 +17,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Streamlit width compatibility
 def df_width():
     try:
         ver = tuple(map(int, st.__version__.split(".")[:2]))
@@ -32,7 +29,6 @@ def df_width():
 WIDTH_KWARG = df_width()
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shelf_history.json")
 
-# Master Bangalore Locality & Pincode Bi-directional Matrix
 LOCATION_ALIASES = {
     "560021": ["560021", "jalahalli"],
     "jalahalli": ["560021", "jalahalli"],
@@ -84,20 +80,12 @@ LOCATION_COORDINATES = {
     "560096": ("13.000000", "77.550000", "Rajajinagar (560096)")
 }
 
-def resolve_location_coordinates(loc_input: str):
+def resolve_location(loc_input: str):
     clean = str(loc_input).strip().lower()
     for pin, aliases in LOCATION_ALIASES.items():
         if clean in aliases or clean == pin:
             if pin in LOCATION_COORDINATES:
                 return LOCATION_COORDINATES[pin]
-    try:
-        geolocator = Nominatim(user_agent="qcom_shelf_monitor_prod", timeout=4)
-        target = f"{clean}, Bangalore, India" if not clean.isdigit() else f"{clean}, India"
-        loc = geolocator.geocode(target)
-        if loc:
-            return str(loc.latitude), str(loc.longitude), f"{loc_input.title()}"
-    except Exception:
-        pass
     return "12.971598", "77.594563", f"{loc_input.title()}"
 
 EXCLUDED_BRANDS = ["anandhaas", "shree anandhaas", "anandhas", "ananda dairy", "ananda"]
@@ -193,7 +181,6 @@ def export_history_to_excel():
         df_targets.to_excel(writer, index=False, sheet_name='Target Brands Shift Log')
     return buf.getvalue()
 
-# Pre-populate dynamic dropdown options from history
 raw_hist = load_history()
 hist_kws = sorted(list({k.split("_")[1] for k in raw_hist.keys() if len(k.split("_")) > 1}))
 hist_locs = sorted(list({k.split("_")[2] for k in raw_hist.keys() if len(k.split("_")) > 2}))
@@ -201,16 +188,13 @@ hist_locs = sorted(list({k.split("_")[2] for k in raw_hist.keys() if len(k.split
 if not hist_kws:
     hist_kws = ["mysore pak", "kaju katli", "besan laddu", "sweets"]
 if not hist_locs:
-    hist_locs = ["560091", "560021", "560103", "560034", "560056", "Ullal", "Koramangala"]
+    hist_locs = ["560091", "560021", "560103", "560034", "560056", "ullal"]
 
 if "keyword_list" not in st.session_state:
     st.session_state.keyword_list = hist_kws
 
 if "location_list" not in st.session_state:
     st.session_state.location_list = hist_locs
-
-if "live_incoming_items" not in st.session_state:
-    st.session_state.live_incoming_items = []
 
 # Sidebar Controls
 with st.sidebar:
@@ -244,7 +228,7 @@ with st.sidebar:
     if suggest_instamart: suggest_platforms.append("Instamart")
 
     st.divider()
-    st.subheader("🔄 Automated Poller")
+    st.subheader("🔄 Automated Background Poller")
     auto_monitor = st.checkbox("Enable Auto-Scan Loop", value=False)
     interval_mins = st.slider("Frequency (Minutes)", min_value=1, max_value=60, value=5)
 
@@ -253,7 +237,6 @@ st.caption("Real-time shelf intelligence, algorithmic bidding desk & cannibaliza
 
 st_autorefresh(interval=30 * 1000, key="auto_refresher")
 
-# Search Inputs
 st.subheader("🎯 Monitoring Scope: Target Keywords & Locations")
 col_sel1, col_sel2 = st.columns(2)
 
@@ -264,7 +247,7 @@ with col_sel1:
         default=[st.session_state.keyword_list[0]] if st.session_state.keyword_list else ["mysore pak"]
     )
     with st.expander("➕ Add Custom Keyword"):
-        new_kw = st.text_input("Enter new keyword (e.g. motichoor laddu, milk cake):").strip().lower()
+        new_kw = st.text_input("Enter new keyword (e.g. motichoor laddu):").strip().lower()
         if st.button("Add Keyword") and new_kw:
             if new_kw not in st.session_state.keyword_list:
                 st.session_state.keyword_list.append(new_kw)
@@ -293,103 +276,66 @@ with c_fetch:
     st.write("")
     fetch_btn = st.button("🚀 Fetch Shelf Now", type="primary", **WIDTH_KWARG)
 
-# Client-Side Execution Engine
-query_params = st.query_params
-if "client_payload" in query_params:
+def execute_local_scraper(store_name, kw, loc_str):
+    lat, lon, label = resolve_location(loc_str)
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_blinkit.py")
+    if not os.path.exists(script_path):
+        return [], label, "test_blinkit.py not present."
+    cmd = [sys.executable, script_path, str(store_name).lower(), str(kw), str(lat), str(lon)]
     try:
-        raw_p = urllib.parse.unquote(query_params["client_payload"])
-        parsed_items = json.loads(raw_p)
-        if parsed_items:
-            for item in parsed_items:
-                item["Brand"] = extract_brand(item.get("Product Name", ""))
-                item["Rank Shift"] = "New"
-            
-            history = load_history()
-            now_str = datetime.now().strftime("%I:%M %p, %d %b")
-            store_tag = str(parsed_items[0].get("Platform", "Blinkit")).lower()
-            kw_tag = str(parsed_items[0].get("Search Term", "")).lower().strip()
-            loc_tag = str(parsed_items[0].get("Location", "")).lower().strip()
-            
-            history[f"{store_tag}_{kw_tag}_{loc_tag}"] = {
-                "timestamp": now_str,
-                "items": parsed_items
-            }
-            save_history(history)
-            st.session_state.live_incoming_items = parsed_items
-            del st.query_params["client_payload"]
-            st.rerun()
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        json_match = re.search(r"__JSON_START__(.*?)__JSON_END__", proc.stdout, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group(1))
+            return data, label, None
+        return [], label, "Local Chrome session not found."
     except Exception as e:
-        print(f"Error parsing client payload: {e}")
+        return [], label, str(e)
 
+# Handle live scan requests when run locally
 if fetch_btn:
-    chosen_kw = selected_keywords[0] if selected_keywords else "mysore pak"
-    chosen_loc = selected_locations[0] if selected_locations else "560091"
-    lat, lon, label = resolve_location_coordinates(chosen_loc)
+    target_stores_to_call = [chosen_store.capitalize()] if store_scope == "Selected Storefront Only" else (active_platforms if active_platforms else ["Blinkit", "Zepto", "Instamart"])
+    history = load_history()
+    now_str = datetime.now().strftime("%I:%M %p, %d %b")
+    live_found = False
 
-    js_trigger = f"""
-    <script>
-    (async function() {{
-        const kw = "{chosen_kw}";
-        const lat = "{lat}";
-        const lon = "{lon}";
-        const locStr = "{chosen_loc}";
-        let extracted = [];
+    with st.spinner("Checking live storefront connection..."):
+        for st_name in target_stores_to_call:
+            for kw in selected_keywords:
+                for loc in selected_locations:
+                    items, loc_label, err = execute_local_scraper(st_name, kw, loc)
+                    if items:
+                        ckey = f"{st_name.lower()}_{str(kw).lower().strip()}_{str(loc).lower().strip()}"
+                        history[ckey] = {
+                            "timestamp": now_str,
+                            "items": items
+                        }
+                        live_found = True
 
-        try {{
-            const url = "https://blinkit.com/v1/layout/search?q=" + encodeURIComponent(kw);
-            const res = await fetch(url, {{
-                headers: {{ "lat": lat, "lon": lon, "app_client": "consumer_web" }}
-            }});
-            if (res.ok) {{
-                const data = await res.json();
-                const widgets = (data.layout && data.layout.widgets) || [];
-                let overall = 1, ad_r = 1, org_r = 1;
-                for (const w of widgets) {{
-                    const prods = (w.data && w.data.products) || [];
-                    for (const p of prods) {{
-                        const is_ad = Boolean(p.is_sponsored || p.ad_id);
-                        extracted.push({{
-                            "Platform": "Blinkit",
-                            "Overall Shelf Pos": overall,
-                            "Type": is_ad ? "Sponsored Ad" : "Organic",
-                            "Placement Rank": is_ad ? ("Ad #" + ad_r++) : ("Org #" + org_r++),
-                            "Product Name": p.name || "",
-                            "Price": "₹" + (p.price || 0),
-                            "Pack Size": p.unit || "Standard",
-                            "Search Term": kw,
-                            "Location": locStr,
-                            "Location Name": "{label}"
-                        }});
-                        overall++;
-                    }}
-                }}
-            }}
-        }} catch(e) {{
-            console.log("Client fetch error:", e);
-        }}
+    if live_found:
+        save_history(history)
+        st.success("Successfully captured live catalog data!")
+        st.rerun()
 
-        if (extracted.length > 0) {{
-            const payload = encodeURIComponent(JSON.stringify(extracted));
-            const currentUrl = new URL(window.parent.location.href);
-            currentUrl.searchParams.set("client_payload", payload);
-            window.parent.location.href = currentUrl.toString();
-        }}
-    }})();
-    </script>
-    """
-    components.html(js_trigger, height=0)
-
-# Unified Multi-Store Dataset Retrieval
+# Build Active Dataset Matching User Selection
 history = load_history()
 active_items = []
 target_stores = [chosen_store.capitalize()] if store_scope == "Selected Storefront Only" else (active_platforms if active_platforms else ["Blinkit", "Zepto", "Instamart"])
 
+# 1. Exact Match Scan
 for kw in selected_keywords:
     for loc in selected_locations:
         clean_kw = str(kw).lower().strip()
         clean_loc = str(loc).lower().strip()
         
-        # Expand location aliases
         possible_loc_keys = [clean_loc]
         for pin_k, aliases in LOCATION_ALIASES.items():
             if clean_loc in aliases or clean_loc == pin_k:
@@ -402,7 +348,7 @@ for kw in selected_keywords:
                 cache_key = f"{st_name.lower()}_{clean_kw}_{cand_loc}"
                 if cache_key in history:
                     entry = history[cache_key]
-                    _, _, loc_label = resolve_location_coordinates(cand_loc)
+                    _, _, loc_label = resolve_location(cand_loc)
                     for item in entry.get("items", []):
                         copy_i = dict(item)
                         copy_i["Platform"] = st_name.capitalize()
@@ -413,37 +359,26 @@ for kw in selected_keywords:
                         active_items.append(copy_i)
                     break
 
-# Auto-Platform Fallback: If filtered storefronts returned 0, retrieve from any available platform
-if not active_items and selected_keywords and selected_locations:
+# 2. Intelligent Catalog Fallback (If exact location is empty, pull matching keyword catalog)
+if not active_items and selected_keywords:
     for kw in selected_keywords:
-        for loc in selected_locations:
-            clean_kw = str(kw).lower().strip()
-            clean_loc = str(loc).lower().strip()
-            
-            possible_loc_keys = [clean_loc]
-            for pin_k, aliases in LOCATION_ALIASES.items():
-                if clean_loc in aliases or clean_loc == pin_k:
-                    possible_loc_keys.extend(aliases)
-                    possible_loc_keys.append(pin_k)
-            possible_loc_keys = list(set(possible_loc_keys))
+        clean_kw = str(kw).lower().strip()
+        for k, entry in history.items():
+            parts = k.split("_")
+            if len(parts) >= 3 and parts[1] == clean_kw:
+                st_name = parts[0].capitalize()
+                cand_loc = parts[2]
+                _, _, loc_label = resolve_location(cand_loc)
+                for item in entry.get("items", []):
+                    copy_i = dict(item)
+                    copy_i["Platform"] = st_name
+                    copy_i["Search Term"] = clean_kw
+                    copy_i["Location"] = cand_loc
+                    copy_i["Location Name"] = loc_label
+                    copy_i["Rank Shift"] = "-"
+                    active_items.append(copy_i)
 
-            for st_name in ["Zepto", "Blinkit", "Instamart"]:
-                for cand_loc in possible_loc_keys:
-                    cache_key = f"{st_name.lower()}_{clean_kw}_{cand_loc}"
-                    if cache_key in history:
-                        entry = history[cache_key]
-                        _, _, loc_label = resolve_location_coordinates(cand_loc)
-                        for item in entry.get("items", []):
-                            copy_i = dict(item)
-                            copy_i["Platform"] = st_name.capitalize()
-                            copy_i["Search Term"] = clean_kw
-                            copy_i["Location"] = loc
-                            copy_i["Location Name"] = loc_label
-                            copy_i["Rank Shift"] = "-"
-                            active_items.append(copy_i)
-                        break
-
-# De-duplicate identical SKUs
+# Deduplicate items
 seen_keys = set()
 deduped_items = []
 for it in active_items:
@@ -521,7 +456,7 @@ with st.expander("🚨 Recent Incident & Alert Log", expanded=True):
         else:
             st.button("📥 Download Current Scan (.csv)", disabled=True, **WIDTH_KWARG)
 
-# Strategic Bidding Desk Matrix Engine
+# Strategic Bidding Engine
 def compute_professional_bidding_matrix(items, enabled_platforms):
     if not items:
         return []
