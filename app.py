@@ -10,7 +10,6 @@ from datetime import datetime
 import altair as alt
 from streamlit_autorefresh import st_autorefresh
 import urllib.request
-import urllib.parse
 
 st.set_page_config(
     page_title="Quick Commerce Shelf Monitor & Bidding Desk",
@@ -26,7 +25,8 @@ def df_width():
     return {"use_container_width": True}
 
 WIDTH_KWARG = df_width()
-HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shelf_history.json")
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/Sachinsundeep/Q-com-ad-track/main/shelf_history.json"
+LOCAL_HISTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shelf_history.json")
 
 LOCATION_LOOKUP = {
     "560021": {"name": "Jalahalli", "lat": "13.0470976", "lon": "77.5476596"},
@@ -43,9 +43,7 @@ LOCATION_LOOKUP = {
     "mg road": {"name": "MG Road", "lat": "12.971598", "lon": "77.594563"},
     "560076": {"name": "BTM Layout", "lat": "12.916575", "lon": "77.610116"},
     "btm": {"name": "BTM Layout", "lat": "12.916575", "lon": "77.610116"},
-    "btm layout": {"name": "BTM Layout", "lat": "12.916575", "lon": "77.610116"},
     "560068": {"name": "Electronic City", "lat": "12.899446", "lon": "77.625475"},
-    "electronic city": {"name": "Electronic City", "lat": "12.899446", "lon": "77.625475"},
     "bommanahalli": {"name": "Bommanahalli", "lat": "12.902900", "lon": "77.624200"},
     "560066": {"name": "Whitefield", "lat": "12.969819", "lon": "77.749972"},
     "whitefield": {"name": "Whitefield", "lat": "12.969819", "lon": "77.749972"},
@@ -53,7 +51,6 @@ LOCATION_LOOKUP = {
     "basavanagudi": {"name": "Basavanagudi", "lat": "12.943187", "lon": "77.573787"},
     "560040": {"name": "Vijayanagar", "lat": "12.971900", "lon": "77.530500"},
     "vijayanagar": {"name": "Vijayanagar", "lat": "12.971900", "lon": "77.530500"},
-    "vijay nagar": {"name": "Vijayanagar", "lat": "12.971900", "lon": "77.530500"},
     "560056": {"name": "Ullal / Bangalore West", "lat": "12.955600", "lon": "77.498000"},
     "ullal": {"name": "Ullal / Bangalore West", "lat": "12.955600", "lon": "77.498000"},
     "560091": {"name": "Viswaneedam", "lat": "12.990000", "lon": "77.510000"}
@@ -76,17 +73,30 @@ def is_my_brand(brand_name: str) -> bool:
         if exc in b: return False
     return bool("anand" in b or "chak" in b)
 
-def load_history():
-    if os.path.exists(HISTORY_FILE):
+@st.cache_data(ttl=10)
+def load_history_live():
+    # Attempt to load directly from GitHub raw API
+    try:
+        req = urllib.request.Request(
+            f"{GITHUB_RAW_URL}?t={int(time.time())}",
+            headers={"User-Agent": "Qcom-Monitor"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception:
+        pass
+
+    # Local fallback
+    if os.path.exists(LOCAL_HISTORY):
         try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            with open(LOCAL_HISTORY, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
     return {}
 
 def export_history_to_excel():
-    history = load_history()
+    history = load_history_live()
     all_rows = []
     for key, data in history.items():
         parts = key.split("_")
@@ -115,50 +125,13 @@ def export_history_to_excel():
         df_targets.to_excel(writer, index=False, sheet_name='Target Brands Shift Log')
     return buf.getvalue()
 
-def trigger_github_cloud_scraper(store, kw, loc_str):
-    token = st.secrets.get("GH_TOKEN", None)
-    if not token:
-        st.error("Missing GitHub Token secret in Streamlit Cloud. Please add GH_TOKEN in App Settings.")
-        return False
-    lat, lon, _ = resolve_location(loc_str)
-    url = "https://api.github.com/repos/Sachinsundeep/Q-com-ad-track/actions/workflows/live_scan.yml/dispatches"
-    payload = json.dumps({
-        "ref": "main",
-        "inputs": {
-            "store": store.lower(),
-            "keyword": kw.lower(),
-            "pincode": loc_str.lower(),
-            "lat": lat,
-            "lon": lon
-        }
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "Qcom-Streamlit"
-        },
-        method="POST"
-    )
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return resp.status == 204
-    except Exception as e:
-        st.error(f"Failed to dispatch cloud scraper: {e}")
-        return False
-
-# Initialize dynamic lists from existing database
-raw_hist = load_history()
+# Initialize dynamic options
+raw_hist = load_history_live()
 hist_kws = sorted(list({k.split("_")[1] for k in raw_hist.keys() if len(k.split("_")) > 1}))
 hist_locs = sorted(list({k.split("_")[2] for k in raw_hist.keys() if len(k.split("_")) > 2}))
 
-if not hist_kws: hist_kws = ["mysore pak", "kaju katli", "besan laddu"]
-if not hist_locs: hist_locs = ["560021", "560091", "560103", "Koramangala", "Ullal"]
-
-if "keyword_list" not in st.session_state: st.session_state.keyword_list = hist_kws
-if "location_list" not in st.session_state: st.session_state.location_list = hist_locs
+if not hist_kws: hist_kws = ["besan laddu", "mysore pak", "kaju katli"]
+if not hist_locs: hist_locs = ["560021", "560091", "560103", "560034"]
 
 with st.sidebar:
     st.header("🔔 Alert Channels")
@@ -185,30 +158,18 @@ with st.sidebar:
     if suggest_instamart: suggest_platforms.append("Instamart")
 
 st.title("Quick Commerce Shelf Monitor & Bidding Desk")
-st.caption("24/7 autonomous cloud shelf extraction & algorithmic bidding engine for Anand Sweets & Chak Now.")
+st.caption("Live storefront shelf monitoring & algorithmic bidding engine for Anand Sweets & Chak Now.")
 
-st_autorefresh(interval=15 * 1000, key="auto_sync_timer")
+st_autorefresh(interval=15 * 1000, key="cloud_refresher")
 
 st.subheader("🎯 Monitoring Scope: Target Keywords & Locations")
 c_sel1, c_sel2 = st.columns(2)
 
 with c_sel1:
-    selected_keywords = st.multiselect("Active Search Keywords:", options=st.session_state.keyword_list, default=[st.session_state.keyword_list[0]])
-    with st.expander("➕ Add Custom Keyword"):
-        n_kw = st.text_input("Enter new keyword:").strip().lower()
-        if st.button("Add Keyword") and n_kw:
-            if n_kw not in st.session_state.keyword_list:
-                st.session_state.keyword_list.append(n_kw)
-                st.rerun()
+    selected_keywords = st.multiselect("Active Search Keywords:", options=hist_kws, default=[hist_kws[0]])
 
 with c_sel2:
-    selected_locations = st.multiselect("Active Locations / Pincodes:", options=st.session_state.location_list, default=[st.session_state.location_list[0]])
-    with st.expander("➕ Add Custom Location or Pincode"):
-        n_loc = st.text_input("Enter locality (e.g. Ullal, Vijay Nagar, 560034):").strip()
-        if st.button("Add Location") and n_loc:
-            if n_loc not in st.session_state.location_list:
-                st.session_state.location_list.append(n_loc)
-                st.rerun()
+    selected_locations = st.multiselect("Active Locations / Pincodes:", options=hist_locs, default=[hist_locs[0]])
 
 c_scope, c_store, c_fetch = st.columns([3, 3, 2])
 with c_scope:
@@ -218,23 +179,14 @@ with c_store:
 with c_fetch:
     st.write("")
     st.write("")
-    fetch_btn = st.button("🚀 Fetch Shelf Now", type="primary", **WIDTH_KWARG)
+    fetch_btn = st.button("🚀 Refresh Live Shelf", type="primary", **WIDTH_KWARG)
 
-# On-Demand Trigger
 if fetch_btn:
-    chosen_kw = selected_keywords[0] if selected_keywords else "mysore pak"
-    chosen_loc = selected_locations[0] if selected_locations else "560021"
-    target_st = chosen_store if store_scope == "Selected Storefront Only" else "blinkit"
-    
-    with st.spinner(f"Triggering 24/7 Cloud Worker to scrape '{chosen_kw}' at {chosen_loc}..."):
-        ok = trigger_github_cloud_scraper(target_st, chosen_kw, chosen_loc)
-        if ok:
-            st.success("✅ Cloud scrape worker started! Fetching real-time listings... Please wait ~25-30 seconds for the database to update.")
-            time.sleep(4)
-            st.rerun()
+    st.cache_data.clear()
+    st.rerun()
 
 # Build Active Display Dataset
-history = load_history()
+history = load_history_live()
 active_items = []
 target_stores = [chosen_store.capitalize()] if store_scope == "Selected Storefront Only" else (active_platforms if active_platforms else ["Blinkit", "Zepto", "Instamart"])
 
@@ -255,7 +207,6 @@ for kw in selected_keywords:
                     ci["Rank Shift"] = "-"
                     active_items.append(ci)
 
-# Display Dashboard
 if active_items:
     df = pd.DataFrame(active_items)
     kw_str = ", ".join([k.title() for k in selected_keywords])
@@ -271,7 +222,7 @@ if active_items:
 
     st.divider()
 
-    # Bidding Desk Matrix Engine
+    # Strategic Bidding Desk
     st.subheader("💡 Strategic Bidding Desk")
     def compute_bidding_matrix(items, enabled_plats):
         matrix = []
@@ -378,8 +329,6 @@ if active_items:
                 b_df.to_excel(writer, index=False, sheet_name='ActionableBiddingPlan')
             st.download_button("📥 Export Bidding Action Sheet (.xlsx)", data=b_buf.getvalue(), file_name="qcom_bidding_action_plan.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", **WIDTH_KWARG)
         st.dataframe(b_df.style.apply(style_bidding, axis=1), height=300, **WIDTH_KWARG)
-    else:
-        st.info("No target brand items requiring bidding intervention in this view.")
 
     st.divider()
 
@@ -447,4 +396,4 @@ if active_items:
     st.dataframe(df[[c for c in cols_order if c in df.columns]].style.apply(style_full_table, axis=1), height=550, **WIDTH_KWARG)
 
 else:
-    st.info("No recorded shelf entries found for this scope. Click **'🚀 Fetch Shelf Now'** above to trigger the 24/7 cloud runner.")
+    st.warning("No shelf records found for the selected scope. Please run a scan from a local machine or select an existing record.")
