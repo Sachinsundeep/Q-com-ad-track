@@ -1,0 +1,53 @@
+name: Live Quick Commerce Storefront Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      store:
+        description: 'Target Storefront (blinkit, zepto, instamart)'
+        required: true
+        default: 'blinkit'
+      keyword:
+        description: 'Search Keyword'
+        required: true
+        default: 'mysore pak'
+      pincode:
+        description: 'Target Locality or Pincode'
+        required: true
+        default: '560021'
+      lat:
+        description: 'Latitude'
+        required: false
+        default: '13.0470976'
+      lon:
+        description: 'Longitude'
+        required: false
+        default: '77.5476596'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install playwright pandas openpyxl
+          playwright install chromium --with-deps
+
+      - name: Execute Live Scraper
+        run: |
+          python cloud_scraper.py "${{ github.event.inputs.store }}" "${{ github.event.inputs.keyword }}" "${{ github.event.inputs.lat }}" "${{ github.event.inputs.lon }}" "${{ github.event.inputs.pincode }}"
+
+      - name: Commit and Push Updated History
+        run: |
+          git config --global user.name "Q-Com Bot"
+          git config --global user.email "bot@qcom.internal"
+          git add shelf_history.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Live scan: ${{ github.event.inputs.keyword }} @ ${{ github.event.inputs.pincode }}" && git push)
